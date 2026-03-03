@@ -10,6 +10,43 @@ function logout() {
     window.location.href = 'index.html';
 }
 
+// --- GEOLOCATION HELPER ---
+let cachedLocation = null;
+
+function getCurrentLocation() {
+    return new Promise((resolve) => {
+        if (cachedLocation) {
+            resolve(cachedLocation);
+            return;
+        }
+        if (!navigator.geolocation) {
+            resolve(null);
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                cachedLocation = {
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude
+                };
+                resolve(cachedLocation);
+            },
+            (err) => {
+                console.log('Geolocation unavailable:', err.message);
+                resolve(null);
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+        );
+    });
+}
+
+function getMapsLink(lat, lng) {
+    if (lat && lng) {
+        return `https://www.google.com/maps?q=${lat},${lng}`;
+    }
+    return null;
+}
+
 // --- COMPARISON MODAL LOGIC (Shared) ---
 let currentOriginal = '';
 let currentTagged = '';
@@ -156,8 +193,8 @@ if (window.location.pathname.includes('profile.html')) {
         tbody.innerHTML = '';
         data.recentActivity.forEach(item => {
             const tr = document.createElement('tr');
-            // Format: Result (with view) | Confidence | Date
             const percentage = (item.confidence * 100).toFixed(0) + '%';
+            const itemMapsLink = getMapsLink(item.latitude, item.longitude);
 
             tr.innerHTML = `
                 <td>
@@ -165,7 +202,10 @@ if (window.location.pathname.includes('profile.html')) {
                     <button class="view-btn" style="margin-left:5px">View</button>
                 </td>
                 <td>${percentage}</td>
-                <td>${new Date(item.createdAt).toLocaleString()}</td>
+                <td>
+                    ${new Date(item.createdAt).toLocaleString()}
+                    ${itemMapsLink ? `<a href="${itemMapsLink}" target="_blank" rel="noopener" style="color: var(--accent); text-decoration: none; margin-left: 6px;" title="View on Maps">📍</a>` : ''}
+                </td>
             `;
 
             const btn = tr.querySelector('.view-btn');
@@ -310,11 +350,14 @@ if (window.location.pathname.includes('dashboard.html')) {
 
     // Capture Photo
     if (captureBtn) {
-        captureBtn.addEventListener('click', () => {
+        captureBtn.addEventListener('click', async () => {
             const context = canvas.getContext('2d');
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Get GPS location while capturing
+            const location = await getCurrentLocation();
 
             // Convert to Blob and Upload
             canvas.toBlob(async (blob) => {
@@ -326,17 +369,23 @@ if (window.location.pathname.includes('dashboard.html')) {
                 const preview = document.getElementById('preview-image');
                 preview.src = URL.createObjectURL(blob);
                 document.getElementById('result-display').style.display = 'block';
-                document.getElementById('result-text').innerText = 'Analyzing...';
+                document.getElementById('result-text').innerText = 'Analyzing... 📍 Getting location...';
 
-                await uploadImage(file);
+                await uploadImage(file, location);
             }, 'image/jpeg');
         });
     }
 
-    // Reusable Upload Function
-    async function uploadImage(file) {
+    // Reusable Upload Function (now with location support)
+    async function uploadImage(file, location) {
         const formData = new FormData();
         formData.append('image', file);
+
+        // Attach GPS coordinates if available
+        if (location) {
+            formData.append('latitude', location.latitude);
+            formData.append('longitude', location.longitude);
+        }
 
         try {
             const res = await fetch(`${API_URL}/predict`, {
@@ -353,6 +402,21 @@ if (window.location.pathname.includes('dashboard.html')) {
                 // Show count or 'No Waste'
                 const countText = data.totalItems === 0 ? 'No Waste Detected' : `${data.totalItems} items`;
 
+                // Build location display
+                let locationHtml = '';
+                if (data.mapsLink) {
+                    locationHtml = `
+                        <br>
+                        <a href="${data.mapsLink}" target="_blank" rel="noopener" 
+                           style="color: var(--accent); text-decoration: underline; font-size: 0.9rem; display: inline-block; margin-top: 8px;">
+                            📍 View Location on Maps
+                        </a>
+                        <span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 6px;">
+                            (via ${data.locationSource === 'exif' ? 'image EXIF' : 'GPS'})
+                        </span>
+                    `;
+                }
+
                 const resultText = document.getElementById('result-text');
                 resultText.innerHTML = `
                     Detected: ${data.label} (${(data.confidence * 100).toFixed(1)}%)
@@ -360,6 +424,8 @@ if (window.location.pathname.includes('dashboard.html')) {
                     <span class="severity-badge ${badgeClass}" style="margin-left: 0; margin-top: 10px; display: inline-block;">
                         Severity: ${severity} (${countText})
                     </span>
+                    ${locationHtml}
+                    ${data.label !== 'No Waste Detected' ? '<br><span style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px; display: inline-block;">📧 Alert sent to waste management authorities</span>' : ''}
                 `;
 
                 if (data.tagged_image_url) {
@@ -376,8 +442,8 @@ if (window.location.pathname.includes('dashboard.html')) {
         }
     }
 
-    // File Input Change (Existing Logic adapted)
-    fileInput.addEventListener('change', (e) => {
+    // File Input Change (EXIF will be extracted server-side, no browser GPS for file uploads)
+    fileInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
 
@@ -385,11 +451,12 @@ if (window.location.pathname.includes('dashboard.html')) {
         reader.onload = (e) => {
             document.getElementById('preview-image').src = e.target.result;
             document.getElementById('result-display').style.display = 'block';
-            document.getElementById('result-text').innerText = 'Analyzing...';
+            document.getElementById('result-text').innerText = 'Analyzing... 📍 Extracting location from image...';
         };
         reader.readAsDataURL(file);
 
-        uploadImage(file);
+        // For file uploads, server extracts EXIF GPS — no browser GPS needed
+        await uploadImage(file, null);
     });
 
     // Load History
@@ -409,22 +476,22 @@ if (window.location.pathname.includes('dashboard.html')) {
                 const historyItem = document.createElement('div');
                 historyItem.className = 'history-item';
 
-                // Format: Label | Percentage | Button
                 const percentage = (item.confidence * 100).toFixed(0) + '%';
                 const labelText = item.label || item.Label || 'Unknown';
                 const severity = item.severity || 'Low';
                 const badgeClass = `badge-${severity.toLowerCase()}`;
+                const itemMapsLink = getMapsLink(item.latitude, item.longitude);
 
                 historyItem.innerHTML = `
                     <div class="history-info">
                         <strong>${labelText}</strong>
                         <span class="severity-badge ${badgeClass}">${severity}</span>
                         <span style="color: #666;">${percentage}</span>
+                        ${itemMapsLink ? `<a href="${itemMapsLink}" target="_blank" rel="noopener" style="color: var(--accent); font-size: 0.8rem; text-decoration: none;" title="View on Maps">📍</a>` : ''}
                     </div>
                     <button class="view-btn">View Results</button>
                 `;
 
-                // Attach event listener
                 const btn = historyItem.querySelector('.view-btn');
                 btn.onclick = () => openModal(item.originalImagePath, item.taggedImagePath);
 

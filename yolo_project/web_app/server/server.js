@@ -6,11 +6,13 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const { spawn } = require('child_process');
+const ExifParser = require('exif-parser');
 const { initDb, User, Prediction } = require('./database');
+const { sendAlertEmail } = require('./emailService');
 
 const app = express();
 const PORT = 3000;
-const SECRET_KEY = "waste_detection_secret"; // Move to .env for prod
+const SECRET_KEY = process.env.JWT_SECRET || "waste_detection_secret";
 
 // Middleware
 app.use(cors());
@@ -83,6 +85,26 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+// --- EXIF GPS EXTRACTION HELPER ---
+function extractExifGps(filePath) {
+    try {
+        const fs = require('fs');
+        const buffer = fs.readFileSync(filePath);
+        const parser = ExifParser.create(buffer);
+        const exifData = parser.parse();
+
+        if (exifData.tags && exifData.tags.GPSLatitude && exifData.tags.GPSLongitude) {
+            return {
+                latitude: exifData.tags.GPSLatitude,
+                longitude: exifData.tags.GPSLongitude
+            };
+        }
+    } catch (e) {
+        console.log('EXIF extraction skipped:', e.message);
+    }
+    return null;
+}
+
 // --- PREDICTION ROUTES ---
 
 app.post('/api/predict', authenticateToken, upload.single('image'), async (req, res) => {
@@ -92,8 +114,31 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
     const modelPath = path.resolve('../../notebooks/runs/best.pt');
     const yolov5Source = path.resolve('../../notebooks/yolov5');
 
+    // --- GEOLOCATION: Browser GPS (priority) or EXIF fallback ---
+    let latitude = null;
+    let longitude = null;
+    let locationSource = null;
+
+    // 1. Check if browser sent GPS coords
+    if (req.body.latitude && req.body.longitude) {
+        latitude = parseFloat(req.body.latitude);
+        longitude = parseFloat(req.body.longitude);
+        locationSource = 'gps';
+        console.log(`📍 GPS from browser: ${latitude}, ${longitude}`);
+    }
+
+    // 2. Fallback: Extract from image EXIF
+    if (!latitude || !longitude) {
+        const exifCoords = extractExifGps(imagePath);
+        if (exifCoords) {
+            latitude = exifCoords.latitude;
+            longitude = exifCoords.longitude;
+            locationSource = 'exif';
+            console.log(`📍 GPS from EXIF: ${latitude}, ${longitude}`);
+        }
+    }
+
     // Use 'python' command (requires Python to be in system PATH)
-    // On some Mac/Linux systems it might be 'python3'
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
 
     const pythonProcess = spawn(pythonCommand, [
@@ -115,8 +160,7 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
 
     pythonProcess.on('close', async (code) => {
         try {
-            // Robust JSON extraction: Find the last valid JSON object in stdout
-            // YOLOv5 often prints logs to stdout, so we must isolate the JSON { ... }
+            // Robust JSON extraction
             const jsonStart = dataString.indexOf('{');
             const jsonEnd = dataString.lastIndexOf('}');
 
@@ -127,14 +171,13 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
             const cleanJson = dataString.substring(jsonStart, jsonEnd + 1);
             const result = JSON.parse(cleanJson);
 
-            // Debug Logging
             console.log("Total Items from Python:", result.total_items);
 
             if (result.error) {
                 return res.status(500).json({ error: result.error });
             }
 
-            // Severity Logic Helper
+            // Severity Logic
             function calculateSeverity(total) {
                 if (total === 0) return "No Waste";
                 if (total <= 3) return "Low";
@@ -142,12 +185,10 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
                 return "High";
             }
 
-            // Calculate Severity
-            // Python sends 'total_items', we use 'totalItems'
             const totalItems = result.total_items ?? 0;
             const severityLevel = calculateSeverity(totalItems);
 
-            // Save to DB
+            // Save to DB with location
             const originalImagePath = `/uploads/${req.file.filename}`;
             const taggedImagePath = `/uploads/${result.tagged_image}`;
 
@@ -155,18 +196,48 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
                 UserId: req.user.id,
                 originalImagePath: originalImagePath,
                 taggedImagePath: taggedImagePath,
-                label: result.label || 'Unknown', // Fallback
+                label: result.label || 'Unknown',
                 confidence: result.confidence,
                 totalItems: totalItems,
-                severity: severityLevel
+                severity: severityLevel,
+                latitude: latitude,
+                longitude: longitude,
+                locationSource: locationSource
             });
 
-            // Respond with full result including new image path
+            // Build Google Maps link
+            const mapsLink = (latitude && longitude)
+                ? `https://www.google.com/maps?q=${latitude},${longitude}`
+                : null;
+
+            // --- SEND EMAIL ALERT TO AUTHORITIES ---
+            if (result.label !== 'No Waste Detected') {
+                // Fetch username for email
+                const user = await User.findByPk(req.user.id);
+                const taggedAbsPath = path.resolve('uploads', result.tagged_image);
+
+                sendAlertEmail({
+                    label: result.label || 'Unknown',
+                    severity: severityLevel,
+                    totalItems: totalItems,
+                    confidence: result.confidence,
+                    taggedImagePath: taggedAbsPath,
+                    latitude: latitude,
+                    longitude: longitude,
+                    username: user ? user.username : 'EcoSight User'
+                }).catch(err => console.error('Email send error:', err));
+            }
+
+            // Respond with full result
             res.json({
                 ...result,
                 tagged_image_url: taggedImagePath,
                 severity: severityLevel,
-                totalItems: totalItems
+                totalItems: totalItems,
+                latitude: latitude,
+                longitude: longitude,
+                locationSource: locationSource,
+                mapsLink: mapsLink
             });
         } catch (e) {
             console.error("Inference Error:", e);

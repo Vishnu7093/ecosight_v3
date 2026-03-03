@@ -57,6 +57,21 @@ const Prediction = sequelize.define('Prediction', {
         type: DataTypes.STRING,
         allowNull: true,
         defaultValue: 'Low' // Default to Low to prevent nulls
+    },
+    latitude: {
+        type: DataTypes.FLOAT,
+        allowNull: true,
+        defaultValue: null
+    },
+    longitude: {
+        type: DataTypes.FLOAT,
+        allowNull: true,
+        defaultValue: null
+    },
+    locationSource: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null // 'gps', 'exif', or null
     }
 });
 
