@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+env/
+.env
+
+# Model weights (large files)
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.mlmodel
+
+# Dataset images (too large for git)
+yolo_project/waste_detection/train/
+yolo_project/waste_detection/valid/
+yolo_project/waste_detection/test/
+yolo_project/datasets/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+yolo_project/notebooks/runs/
+yolo_project/notebooks/exported_models/
+yolo_project/notebooks/yolov5/
+
+# Database
+*.db
+*.sqlite
+
+# Node
+node_modules/
+package-lock.json
+
+# YOLOv5 runs
+yolo_project/yolov5/runs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+wandb/
+yolo_project/yolov5/

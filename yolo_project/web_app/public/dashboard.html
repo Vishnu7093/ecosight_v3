@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard - EcoSight</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#000000">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<body class="light-mode">
+
+    <nav class="navbar">
+        <div class="brand">EcoSight</div>
+        <!-- Nav Icons Container -->
+        <div class="nav-icons">
+            <!-- Admin Dashboard Button (Hidden by default) -->
+            <button class="icon-btn" id="admin-nav-btn" style="display: none;"
+                onclick="window.location.href='admin.html'" title="Admin Dashboard">
+                <svg class="icon-svg" viewBox="0 0 24 24">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+                </svg>
+            </button>
+
+            <!-- Theme Toggle -->
+            <button class="icon-btn" id="theme-toggle" title="Toggle Theme">
+                <!-- Sun Icon -->
+                <svg id="sun-icon" class="icon-svg" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="5"></circle>
+                    <line x1="12" y1="1" x2="12" y2="3"></line>
+                    <line x1="12" y1="21" x2="12" y2="23"></line>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                    <line x1="1" y1="12" x2="3" y2="12"></line>
+                    <line x1="21" y1="12" x2="23" y2="12"></line>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+                <!-- Moon Icon -->
+                <svg id="moon-icon" class="icon-svg" style="display:none" viewBox="0 0 24 24">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+            </button>
+
+            <!-- User (Profile) -->
+            <button class="icon-btn" onclick="window.location.href='profile.html'" title="My Profile">
+                <svg class="icon-svg" viewBox="0 0 24 24">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+            </button>
+
+            <!-- Logout -->
+            <button class="icon-btn" onclick="logout()" title="Log Out">
+                <svg class="icon-svg" viewBox="0 0 24 24">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                    <polyline points="16 17 21 12 16 7"></polyline>
+                    <line x1="21" y1="12" x2="9" y2="12"></line>
+                </svg>
+            </button>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="dashboard-grid">
+            <aside class="history-sidebar">
+                <h3>My History</h3>
+                <div id="history-list" class="history-list">
+                    <!-- History items will be injected here -->
+                </div>
+            </aside>
+
+            <main class="main-content">
+                <div class="card">
+                    <h2>Detect Waste</h2>
+                    <p style="color: var(--text-secondary); margin-bottom: 20px">Upload an image to identify waste
+                        category.</p>
+
+                    <div class="input-group"
+                        style="display: flex; gap: 10px; justify-content: center; margin-bottom: 20px;">
+                        <button id="upload-btn-trigger" class="btn secondary-btn">📂 Upload Image</button>
+                        <button id="camera-btn" class="btn">📸 Take Photo</button>
+                    </div>
+
+                    <div class="upload-zone" id="upload-zone" style="display: none;">
+                        <p>Drag & Drop or Click to Upload</p>
+                        <input type="file" id="file-input" hidden accept="image/*">
+                    </div>
+
+                    <div id="camera-container" style="display: none; text-align: center;">
+                        <video id="camera-video" autoplay playsinline
+                            style="width: 100%; max-width: 400px; border-radius: 8px; border: 1px solid #333;"></video>
+                        <canvas id="camera-canvas" style="display: none;"></canvas>
+                        <div style="margin-top: 10px;">
+                            <button id="capture-btn" class="btn" style="background-color: red;">🔴 Capture</button>
+                            <button id="close-camera-btn" class="btn secondary-btn">Cancel</button>
+                        </div>
+                    </div>
+
+                    <div id="result-display" class="result-display">
+                        <h3>Detection Result</h3>
+                        <p id="result-text">Analysis complete.</p>
+                        <div style="position: relative; display: inline-block">
+                            <img id="preview-image" src="" alt="Preview">
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Comparison Modal -->
+    <div id="image-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeModal()">&times;</span>
+            <div class="carousel-container">
+                <button class="nav-btn" onclick="prevSlide()">&lt;</button>
+                <div class="slide-view">
+                    <h3 id="modal-label">Raw Image</h3>
+                    <img id="modal-img" src="" alt="View">
+                </div>
+                <button class="nav-btn" onclick="nextSlide()">&gt;</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/main.js"></script>
+</body>
+
+</html>
