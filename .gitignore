@@ -56,3 +56,6 @@ Thumbs.db
 *.log
 wandb/
 yolo_project/yolov5/
+
+# User uploads
+yolo_project/web_app/server/uploads/

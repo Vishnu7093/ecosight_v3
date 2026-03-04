@@ -17,12 +17,13 @@ async function handleLogin(e) {
     e.preventDefault();
     const username = document.getElementById('login-username').value;
     const password = document.getElementById('login-password').value;
+    const loginAs = document.querySelector('input[name="login-role"]:checked').value;
 
     try {
         const res = await fetch(`${API_URL}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password })
+            body: JSON.stringify({ username, password, loginAs })
         });
 
         const data = await res.json();
@@ -30,8 +31,9 @@ async function handleLogin(e) {
             localStorage.setItem('token', data.token);
             localStorage.setItem('username', data.username);
             localStorage.setItem('isAdmin', data.isAdmin);
+            localStorage.setItem('loginAs', data.loginAs);
 
-            if (data.isAdmin) {
+            if (data.loginAs === 'admin') {
                 window.location.href = 'admin.html';
             } else {
                 window.location.href = 'dashboard.html';
@@ -71,7 +73,7 @@ async function handleSignup(e) {
 
 // Check if already logged in
 if (localStorage.getItem('token')) {
-    if (localStorage.getItem('isAdmin') === 'true') {
+    if (localStorage.getItem('loginAs') === 'admin') {
         window.location.href = 'admin.html';
     } else {
         window.location.href = 'dashboard.html';

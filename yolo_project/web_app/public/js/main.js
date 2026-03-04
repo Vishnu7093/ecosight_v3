@@ -294,6 +294,9 @@ if (window.location.pathname.includes('dashboard.html')) {
     const cameraBtn = document.getElementById('camera-btn');
     const uploadZone = document.getElementById('upload-zone');
     const fileInput = document.getElementById('file-input');
+    const fileInfo = document.getElementById('file-info');
+    const fileRemoveBtn = document.getElementById('file-remove');
+    const loadingIndicator = document.getElementById('loading-indicator');
 
     // Camera Elements
     const cameraContainer = document.getElementById('camera-container');
@@ -302,24 +305,89 @@ if (window.location.pathname.includes('dashboard.html')) {
     const captureBtn = document.getElementById('capture-btn');
     const closeCameraBtn = document.getElementById('close-camera-btn');
 
-    let stream = null;
+    // Report Form Elements
+    const reportForm = document.getElementById('report-form');
+    const gpsBtn = document.getElementById('gps-btn');
+    const submitReportBtn = document.getElementById('submit-report-btn');
+    const reportStatus = document.getElementById('report-status');
 
-    // Toggle Upload
+    let stream = null;
+    let lastPredictionId = null;
+
+    // --- UPLOAD ZONE LOGIC ---
     if (uploadBtnTrigger) {
         uploadBtnTrigger.addEventListener('click', () => {
-            uploadZone.style.display = 'block';
+            uploadZone.style.display = 'flex';
             cameraContainer.style.display = 'none';
             stopCamera();
         });
 
-        // Use upload zone click
-        uploadZone.addEventListener('click', () => fileInput.click());
+        // Click to browse
+        uploadZone.addEventListener('click', (e) => {
+            if (e.target !== fileInput) fileInput.click();
+        });
+
+        // Drag & Drop
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('drag-over');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('drag-over');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                handleFileSelected(file);
+            }
+        });
     }
 
-    // Toggle Camera
+    // File remove button
+    if (fileRemoveBtn) {
+        fileRemoveBtn.addEventListener('click', () => {
+            fileInput.value = '';
+            fileInfo.style.display = 'none';
+            uploadZone.style.display = 'flex';
+        });
+    }
+
+    // Handle file selection (from input or drag)
+    function handleFileSelected(file) {
+        // Show file info
+        document.getElementById('file-name').textContent = file.name;
+        const sizeKB = (file.size / 1024).toFixed(1);
+        document.getElementById('file-size').textContent = sizeKB > 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${sizeKB} KB`;
+        fileInfo.style.display = 'flex';
+        uploadZone.style.display = 'none';
+
+        // Show preview
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            document.getElementById('preview-image').src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+
+        // Start upload
+        uploadImage(file);
+    }
+
+    // File Input Change
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        handleFileSelected(file);
+    });
+
+    // --- CAMERA LOGIC ---
     if (cameraBtn) {
         cameraBtn.addEventListener('click', async () => {
             uploadZone.style.display = 'none';
+            fileInfo.style.display = 'none';
             cameraContainer.style.display = 'block';
             try {
                 stream = await navigator.mediaDevices.getUserMedia({
@@ -333,7 +401,6 @@ if (window.location.pathname.includes('dashboard.html')) {
         });
     }
 
-    // Close Camera
     if (closeCameraBtn) {
         closeCameraBtn.addEventListener('click', () => {
             stopCamera();
@@ -350,42 +417,32 @@ if (window.location.pathname.includes('dashboard.html')) {
 
     // Capture Photo
     if (captureBtn) {
-        captureBtn.addEventListener('click', async () => {
+        captureBtn.addEventListener('click', () => {
             const context = canvas.getContext('2d');
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            // Get GPS location while capturing
-            const location = await getCurrentLocation();
-
-            // Convert to Blob and Upload
             canvas.toBlob(async (blob) => {
                 const file = new File([blob], "camera_capture.jpg", { type: "image/jpeg" });
                 stopCamera();
                 cameraContainer.style.display = 'none';
 
-                // Show preview immediately
-                const preview = document.getElementById('preview-image');
-                preview.src = URL.createObjectURL(blob);
-                document.getElementById('result-display').style.display = 'block';
-                document.getElementById('result-text').innerText = 'Analyzing... 📍 Getting location...';
-
-                await uploadImage(file, location);
+                // Show preview
+                document.getElementById('preview-image').src = URL.createObjectURL(blob);
+                uploadImage(file);
             }, 'image/jpeg');
         });
     }
 
-    // Reusable Upload Function (now with location support)
-    async function uploadImage(file, location) {
+    // --- UPLOAD IMAGE TO SERVER ---
+    async function uploadImage(file) {
+        // Show loading, hide other sections
+        loadingIndicator.style.display = 'flex';
+        document.getElementById('result-display').style.display = 'none';
+
         const formData = new FormData();
         formData.append('image', file);
-
-        // Attach GPS coordinates if available
-        if (location) {
-            formData.append('latitude', location.latitude);
-            formData.append('longitude', location.longitude);
-        }
 
         try {
             const res = await fetch(`${API_URL}/predict`, {
@@ -395,71 +452,174 @@ if (window.location.pathname.includes('dashboard.html')) {
             });
 
             const data = await res.json();
+            loadingIndicator.style.display = 'none';
+
             if (res.ok) {
+                // Store prediction ID for report form
+                lastPredictionId = data.predictionId;
+
                 const severity = data.severity || 'Low';
                 const badgeClass = `badge-${severity.toLowerCase()}`;
+                const confidence = (data.confidence * 100).toFixed(1);
+                const totalItems = data.totalItems || 0;
 
-                // Show count or 'No Waste'
-                const countText = data.totalItems === 0 ? 'No Waste Detected' : `${data.totalItems} items`;
-
-                // Build location display
-                let locationHtml = '';
-                if (data.mapsLink) {
-                    locationHtml = `
-                        <br>
-                        <a href="${data.mapsLink}" target="_blank" rel="noopener" 
-                           style="color: var(--accent); text-decoration: underline; font-size: 0.9rem; display: inline-block; margin-top: 8px;">
-                            📍 View Location on Maps
-                        </a>
-                        <span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 6px;">
-                            (via ${data.locationSource === 'exif' ? 'image EXIF' : 'GPS'})
-                        </span>
-                    `;
-                }
-
-                const resultText = document.getElementById('result-text');
-                resultText.innerHTML = `
-                    Detected: ${data.label} (${(data.confidence * 100).toFixed(1)}%)
-                    <br>
-                    <span class="severity-badge ${badgeClass}" style="margin-left: 0; margin-top: 10px; display: inline-block;">
-                        Severity: ${severity} (${countText})
-                    </span>
-                    ${locationHtml}
-                    ${data.label !== 'No Waste Detected' ? '<br><span style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px; display: inline-block;">📧 Alert sent to waste management authorities</span>' : ''}
-                `;
-
+                // Update tagged image
                 if (data.tagged_image_url) {
                     document.getElementById('preview-image').src = data.tagged_image_url;
                 }
 
+                // Populate stats
+                document.getElementById('stat-category').textContent = data.label;
+                document.getElementById('stat-confidence').textContent = `${confidence}%`;
+
+                const severityEl = document.getElementById('stat-severity');
+                severityEl.textContent = severity;
+                severityEl.className = `stat-value severity-badge ${badgeClass}`;
+
+                document.getElementById('stat-items').textContent = totalItems === 0 ? 'None' : totalItems;
+
+                // Populate recyclability
+                const recycleEl = document.getElementById('stat-recyclable');
+                if (data.recyclable === true) {
+                    recycleEl.textContent = '♻️ Yes';
+                    recycleEl.style.color = '#10b981';
+                } else if (data.recyclable === 'partial') {
+                    recycleEl.textContent = '⚠️ Partial';
+                    recycleEl.style.color = '#f59e0b';
+                } else {
+                    recycleEl.textContent = '❌ No';
+                    recycleEl.style.color = '#ef4444';
+                }
+
+                // Show recycle tip
+                const tipEl = document.getElementById('recycle-tip');
+                if (data.recycleTip) {
+                    document.getElementById('recycle-tip-text').textContent = `♻️ ${data.recycleTip}`;
+                    tipEl.style.display = 'block';
+                } else {
+                    tipEl.style.display = 'none';
+                }
+
+                // Show result display
+                document.getElementById('result-display').style.display = 'block';
+
+                // Show report form if waste was detected
+                if (data.label !== 'No Waste Detected') {
+                    reportForm.style.display = 'block';
+                    reportStatus.textContent = '';
+                    // Reset form fields
+                    document.getElementById('report-location').value = '';
+                    document.getElementById('report-landmark').value = '';
+                    document.getElementById('report-description').value = '';
+                } else {
+                    reportForm.style.display = 'none';
+                }
+
                 loadHistory();
             } else {
-                document.getElementById('result-text').innerText = `Error: ${data.error}`;
+                document.getElementById('result-display').style.display = 'block';
+                document.getElementById('stat-category').textContent = 'Error';
+                document.getElementById('stat-confidence').textContent = '—';
+                document.getElementById('stat-severity').textContent = '—';
+                document.getElementById('stat-items').textContent = '—';
+                reportForm.style.display = 'none';
             }
         } catch (err) {
             console.error(err);
-            document.getElementById('result-text').innerText = 'Server Error.';
+            loadingIndicator.style.display = 'none';
+            document.getElementById('result-display').style.display = 'block';
+            document.getElementById('stat-category').textContent = 'Server Error';
+            reportForm.style.display = 'none';
         }
     }
 
-    // File Input Change (EXIF will be extracted server-side, no browser GPS for file uploads)
-    fileInput.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
+    // --- GPS AUTO-FILL ---
+    if (gpsBtn) {
+        gpsBtn.addEventListener('click', () => {
+            if (!navigator.geolocation) {
+                alert('Geolocation is not supported by your browser.');
+                return;
+            }
+            gpsBtn.disabled = true;
+            gpsBtn.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;"></div>';
 
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            document.getElementById('preview-image').src = e.target.result;
-            document.getElementById('result-display').style.display = 'block';
-            document.getElementById('result-text').innerText = 'Analyzing... 📍 Extracting location from image...';
-        };
-        reader.readAsDataURL(file);
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const lat = pos.coords.latitude.toFixed(6);
+                    const lng = pos.coords.longitude.toFixed(6);
+                    document.getElementById('report-location').value = `${lat}, ${lng}`;
+                    gpsBtn.disabled = false;
+                    gpsBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg> ✓';
+                },
+                (err) => {
+                    alert('Could not get your location: ' + err.message);
+                    gpsBtn.disabled = false;
+                    gpsBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg> GPS';
+                },
+                { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            );
+        });
+    }
 
-        // For file uploads, server extracts EXIF GPS — no browser GPS needed
-        await uploadImage(file, null);
-    });
+    // --- SUBMIT REPORT ---
+    if (submitReportBtn) {
+        submitReportBtn.addEventListener('click', async () => {
+            if (!lastPredictionId) {
+                reportStatus.textContent = '⚠️ No detection to report.';
+                return;
+            }
 
-    // Load History
+            // Parse location
+            let latitude = null, longitude = null;
+            const locationVal = document.getElementById('report-location').value.trim();
+            if (locationVal) {
+                const parts = locationVal.split(',').map(s => s.trim());
+                if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                    latitude = parts[0];
+                    longitude = parts[1];
+                }
+            }
+
+            const landmark = document.getElementById('report-landmark').value.trim();
+            const description = document.getElementById('report-description').value.trim();
+
+            submitReportBtn.disabled = true;
+            reportStatus.textContent = 'Submitting...';
+
+            try {
+                const res = await fetch(`${API_URL}/prediction/${lastPredictionId}/report`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ latitude, longitude, landmark, description })
+                });
+
+                const data = await res.json();
+                submitReportBtn.disabled = false;
+
+                if (res.ok) {
+                    reportStatus.innerHTML = '✅ Report submitted! <span style="color: var(--text-secondary);">📧 Alert sent to authorities.</span>';
+                    submitReportBtn.textContent = '✓ Submitted';
+                    submitReportBtn.disabled = true;
+
+                    if (data.mapsLink) {
+                        reportStatus.innerHTML += ` <a href="${data.mapsLink}" target="_blank" rel="noopener" style="color: var(--accent);">📍 View on Maps</a>`;
+                    }
+                    loadHistory();
+                } else {
+                    reportStatus.textContent = `❌ ${data.error || 'Failed to submit.'}`;
+                }
+            } catch (err) {
+                console.error(err);
+                submitReportBtn.disabled = false;
+                reportStatus.textContent = '❌ Network error. Try again.';
+            }
+        });
+    }
+
+    // --- LOAD HISTORY ---
     async function loadHistory() {
         try {
             const res = await fetch(`${API_URL}/history`, {
@@ -477,7 +637,7 @@ if (window.location.pathname.includes('dashboard.html')) {
                 historyItem.className = 'history-item';
 
                 const percentage = (item.confidence * 100).toFixed(0) + '%';
-                const labelText = item.label || item.Label || 'Unknown';
+                const labelText = item.label || 'Unknown';
                 const severity = item.severity || 'Low';
                 const badgeClass = `badge-${severity.toLowerCase()}`;
                 const itemMapsLink = getMapsLink(item.latitude, item.longitude);
@@ -624,6 +784,186 @@ if (window.location.pathname.includes('admin.html')) {
     }
 
     loadStats();
+
+    // --- PENDING REPORTS ---
+    async function loadPendingReports() {
+        try {
+            const res = await fetch(`${API_URL}/admin/pending`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const reports = await res.json();
+            const container = document.getElementById('pending-reports-list');
+            const countEl = document.getElementById('pending-count');
+            const badgeEl = document.getElementById('pending-badge');
+
+            countEl.textContent = reports.length;
+            if (reports.length > 0) {
+                badgeEl.textContent = reports.length;
+                badgeEl.style.display = 'inline-block';
+            } else {
+                badgeEl.style.display = 'none';
+            }
+
+            if (reports.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 30px;">✅ No pending reports. All clear!</p>';
+                return;
+            }
+
+            container.innerHTML = '';
+            reports.forEach(report => {
+                const confidence = (report.confidence * 100).toFixed(1);
+                const severity = report.severity || 'Low';
+                const badgeClass = `badge-${severity.toLowerCase()}`;
+                const mapsLink = (report.latitude && report.longitude)
+                    ? `https://www.google.com/maps?q=${report.latitude},${report.longitude}` : null;
+                const timeStr = new Date(report.createdAt).toLocaleString();
+                const username = report.User ? report.User.username : 'Unknown';
+                const email = report.User ? report.User.email : '';
+
+                const card = document.createElement('div');
+                card.className = 'report-card';
+                card.innerHTML = `
+                    <div class="report-card-header">
+                        <img src="${report.taggedImagePath}" alt="Detection" class="report-thumb" onerror="this.src='${report.originalImagePath}'">
+                        <div class="report-card-info">
+                            <div class="report-card-top">
+                                <strong style="font-size: 1.1rem;">${report.label}</strong>
+                                <span class="severity-badge ${badgeClass}">${severity}</span>
+                            </div>
+                            <div class="report-card-meta">
+                                <span>📊 ${confidence}% confidence</span>
+                                <span>📦 ${report.totalItems} items</span>
+                                <span>👤 ${username}</span>
+                                <span>🕐 ${timeStr}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="report-card-details">
+                        ${mapsLink ? `<div class="report-detail"><strong>📍 Location:</strong> ${report.latitude}, ${report.longitude} <a href="${mapsLink}" target="_blank" style="color: var(--accent);">View on Maps →</a></div>` : '<div class="report-detail"><strong>📍 Location:</strong> <span style="color: var(--text-secondary);">Not provided</span></div>'}
+                        ${report.landmark ? `<div class="report-detail"><strong>🏘️ Landmark:</strong> ${report.landmark}</div>` : ''}
+                        ${report.description ? `<div class="report-detail"><strong>📝 Description:</strong> ${report.description}</div>` : ''}
+                        ${email ? `<div class="report-detail"><strong>📧 Reporter Email:</strong> ${email}</div>` : ''}
+                    </div>
+
+                    <div class="report-card-actions">
+                        <button class="btn approve-btn" onclick="approveReport(${report.id}, this)">✅ Approve & Send Alert</button>
+                        <button class="btn reject-btn" onclick="rejectReport(${report.id}, this)">❌ Reject</button>
+                        <span class="action-status" style="font-size: 0.85rem; color: var(--text-secondary);"></span>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        } catch (e) {
+            console.error("Pending load error:", e);
+        }
+    }
+
+    loadPendingReports();
+}
+
+// --- ADMIN: Approve/Reject (global so onclick works) ---
+async function approveReport(id, btn) {
+    if (!confirm('Approve this report and send alert email to government authorities?')) return;
+    const token = localStorage.getItem('token');
+    btn.disabled = true;
+    const statusEl = btn.parentElement.querySelector('.action-status');
+    statusEl.textContent = 'Approving...';
+
+    try {
+        const res = await fetch(`${API_URL}/admin/prediction/${id}/approve`, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (res.ok) {
+            const p = data.prediction;
+            btn.parentElement.querySelector('.reject-btn').disabled = true;
+            btn.textContent = '✓ Approved';
+
+            // Build Gmail compose URL
+            const mapsLink = (p.latitude && p.longitude)
+                ? `https://www.google.com/maps?q=${p.latitude},${p.longitude}` : 'Not provided';
+            const locationText = (p.latitude && p.longitude) ? `${p.latitude}, ${p.longitude}` : 'Not provided';
+            const confidence = p.confidence ? (p.confidence * 100).toFixed(1) + '%' : 'N/A';
+
+            const subject = `[EcoSight Alert] ${p.label} Waste Detected — ${p.severity} Severity`;
+            const body = `Dear Sir/Madam,
+
+This is an automated waste detection alert from the EcoSight Environmental Monitoring System.
+
+═══ DETECTION DETAILS ═══
+• Waste Type: ${p.label}
+• Severity Level: ${p.severity}
+• Items Detected: ${p.totalItems}
+• AI Confidence: ${confidence}
+
+═══ LOCATION INFORMATION ═══
+• Coordinates: ${locationText}
+• Google Maps: ${mapsLink}
+${p.landmark ? '• Landmark: ' + p.landmark : ''}
+${p.description ? '• Description: ' + p.description : ''}
+
+═══ EVIDENCE ═══
+• Tagged Image: ${window.location.origin}${p.taggedImagePath}
+• Original Image: ${window.location.origin}${p.originalImagePath}
+
+This report has been reviewed and approved by the EcoSight Admin.
+Immediate action is requested to address this environmental concern.
+
+Regards,
+EcoSight Environmental Monitoring System`;
+
+            const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+            statusEl.innerHTML = `✅ Approved! &nbsp;
+                <a href="${gmailUrl}" target="_blank" rel="noopener" class="btn mail-btn" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 0.85rem; text-decoration: none;">
+                    📧 Send Mail to Authorities
+                </a>`;
+
+            // Refresh count
+            const countEl = document.getElementById('pending-count');
+            countEl.textContent = Math.max(0, parseInt(countEl.textContent) - 1);
+            // Dim card slightly
+            btn.closest('.report-card').style.borderColor = '#059669';
+        } else {
+            statusEl.textContent = `❌ ${data.error}`;
+            btn.disabled = false;
+        }
+    } catch (e) {
+        statusEl.textContent = '❌ Network error.';
+        btn.disabled = false;
+    }
+}
+
+async function rejectReport(id, btn) {
+    if (!confirm('Reject this report? No email will be sent.')) return;
+    const token = localStorage.getItem('token');
+    btn.disabled = true;
+    const statusEl = btn.parentElement.querySelector('.action-status');
+    statusEl.textContent = 'Rejecting...';
+
+    try {
+        const res = await fetch(`${API_URL}/admin/prediction/${id}/reject`, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (res.ok) {
+            statusEl.innerHTML = '🚫 Rejected.';
+            btn.parentElement.querySelector('.approve-btn').disabled = true;
+            btn.textContent = '✗ Rejected';
+            const countEl = document.getElementById('pending-count');
+            countEl.textContent = Math.max(0, parseInt(countEl.textContent) - 1);
+            btn.closest('.report-card').style.opacity = '0.5';
+        } else {
+            statusEl.textContent = `❌ ${data.error}`;
+            btn.disabled = false;
+        }
+    } catch (e) {
+        statusEl.textContent = '❌ Network error.';
+        btn.disabled = false;
+    }
 }
 
 // Admin: Reset Database

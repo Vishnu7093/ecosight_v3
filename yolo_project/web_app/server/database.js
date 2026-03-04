@@ -71,7 +71,22 @@ const Prediction = sequelize.define('Prediction', {
     locationSource: {
         type: DataTypes.STRING,
         allowNull: true,
-        defaultValue: null // 'gps', 'exif', or null
+        defaultValue: null // 'gps', 'manual', or null
+    },
+    landmark: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null
+    },
+    description: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        defaultValue: null
+    },
+    status: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: 'pending' // 'pending', 'approved', 'rejected'
     }
 });
 
@@ -82,10 +97,16 @@ Prediction.belongsTo(User);
 // Sync Database
 const initDb = async () => {
     try {
-        await sequelize.sync({ alter: true }); // Automatically updates schema
+        await sequelize.sync({ alter: true });
         console.log('✅ Database synced successfully.');
     } catch (error) {
-        console.error('❌ Database sync failed:', error);
+        console.warn('⚠️ Alter sync failed, recreating tables...');
+        try {
+            await sequelize.sync({ force: true });
+            console.log('✅ Database recreated successfully.');
+        } catch (forceError) {
+            console.error('❌ Database sync failed:', forceError);
+        }
     }
 };
 

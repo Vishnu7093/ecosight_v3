@@ -59,15 +59,20 @@ app.post('/api/signup', async (req, res) => {
 // Login
 app.post('/api/login', async (req, res) => {
     try {
-        const { username, password } = req.body;
+        const { username, password, loginAs } = req.body;
         const user = await User.findOne({ where: { username } });
 
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(401).json({ error: "Invalid credentials" });
         }
 
+        // Validate admin access
+        if (loginAs === 'admin' && !user.isAdmin) {
+            return res.status(403).json({ error: "Access denied. This account does not have Admin privileges." });
+        }
+
         const token = jwt.sign({ id: user.id, isAdmin: user.isAdmin }, SECRET_KEY, { expiresIn: '1h' });
-        res.json({ token, isAdmin: user.isAdmin, username: user.username });
+        res.json({ token, isAdmin: user.isAdmin, username: user.username, loginAs: loginAs || (user.isAdmin ? 'admin' : 'user') });
     } catch (error) {
         res.status(500).json({ error: "Login failed" });
     }
@@ -85,26 +90,6 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// --- EXIF GPS EXTRACTION HELPER ---
-function extractExifGps(filePath) {
-    try {
-        const fs = require('fs');
-        const buffer = fs.readFileSync(filePath);
-        const parser = ExifParser.create(buffer);
-        const exifData = parser.parse();
-
-        if (exifData.tags && exifData.tags.GPSLatitude && exifData.tags.GPSLongitude) {
-            return {
-                latitude: exifData.tags.GPSLatitude,
-                longitude: exifData.tags.GPSLongitude
-            };
-        }
-    } catch (e) {
-        console.log('EXIF extraction skipped:', e.message);
-    }
-    return null;
-}
-
 // --- PREDICTION ROUTES ---
 
 app.post('/api/predict', authenticateToken, upload.single('image'), async (req, res) => {
@@ -113,30 +98,6 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
     const imagePath = path.resolve(req.file.path);
     const modelPath = path.resolve('../../notebooks/runs/best.pt');
     const yolov5Source = path.resolve('../../notebooks/yolov5');
-
-    // --- GEOLOCATION: Browser GPS (priority) or EXIF fallback ---
-    let latitude = null;
-    let longitude = null;
-    let locationSource = null;
-
-    // 1. Check if browser sent GPS coords
-    if (req.body.latitude && req.body.longitude) {
-        latitude = parseFloat(req.body.latitude);
-        longitude = parseFloat(req.body.longitude);
-        locationSource = 'gps';
-        console.log(`📍 GPS from browser: ${latitude}, ${longitude}`);
-    }
-
-    // 2. Fallback: Extract from image EXIF
-    if (!latitude || !longitude) {
-        const exifCoords = extractExifGps(imagePath);
-        if (exifCoords) {
-            latitude = exifCoords.latitude;
-            longitude = exifCoords.longitude;
-            locationSource = 'exif';
-            console.log(`📍 GPS from EXIF: ${latitude}, ${longitude}`);
-        }
-    }
 
     // Use 'python' command (requires Python to be in system PATH)
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
@@ -188,56 +149,40 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
             const totalItems = result.total_items ?? 0;
             const severityLevel = calculateSeverity(totalItems);
 
-            // Save to DB with location
+            // Recyclability mapping
+            const recyclabilityMap = {
+                'Glass': { recyclable: true, tip: 'Glass is 100% recyclable. Clean and separate by color.' },
+                'Metal': { recyclable: true, tip: 'Metal cans and foil are recyclable. Rinse before recycling.' },
+                'Paper': { recyclable: true, tip: 'Paper and cardboard are recyclable. Keep dry and clean.' },
+                'Plastic': { recyclable: 'partial', tip: 'Only plastics #1 and #2 are widely recyclable. Check the number.' },
+                'Waste': { recyclable: false, tip: 'General waste — goes to landfill. Try to reduce waste.' }
+            };
+            const category = result.label || 'Unknown';
+            const recyclability = recyclabilityMap[category] || { recyclable: false, tip: 'Unable to determine recyclability.' };
+
+            // Save to DB (location will be added later via report form)
             const originalImagePath = `/uploads/${req.file.filename}`;
             const taggedImagePath = `/uploads/${result.tagged_image}`;
 
-            await Prediction.create({
+            const prediction = await Prediction.create({
                 UserId: req.user.id,
                 originalImagePath: originalImagePath,
                 taggedImagePath: taggedImagePath,
                 label: result.label || 'Unknown',
                 confidence: result.confidence,
                 totalItems: totalItems,
-                severity: severityLevel,
-                latitude: latitude,
-                longitude: longitude,
-                locationSource: locationSource
+                severity: severityLevel
             });
 
-            // Build Google Maps link
-            const mapsLink = (latitude && longitude)
-                ? `https://www.google.com/maps?q=${latitude},${longitude}`
-                : null;
-
-            // --- SEND EMAIL ALERT TO AUTHORITIES ---
-            if (result.label !== 'No Waste Detected') {
-                // Fetch username for email
-                const user = await User.findByPk(req.user.id);
-                const taggedAbsPath = path.resolve('uploads', result.tagged_image);
-
-                sendAlertEmail({
-                    label: result.label || 'Unknown',
-                    severity: severityLevel,
-                    totalItems: totalItems,
-                    confidence: result.confidence,
-                    taggedImagePath: taggedAbsPath,
-                    latitude: latitude,
-                    longitude: longitude,
-                    username: user ? user.username : 'EcoSight User'
-                }).catch(err => console.error('Email send error:', err));
-            }
-
-            // Respond with full result
+            // Respond with full result including prediction ID
             res.json({
                 ...result,
+                predictionId: prediction.id,
                 tagged_image_url: taggedImagePath,
                 severity: severityLevel,
                 totalItems: totalItems,
-                latitude: latitude,
-                longitude: longitude,
-                locationSource: locationSource,
-                mapsLink: mapsLink
+                recyclable: recyclability.recyclable,
+                recycleTip: recyclability.tip
             });
         } catch (e) {
             console.error("Inference Error:", e);
@@ -245,6 +190,120 @@ app.post('/api/predict', authenticateToken, upload.single('image'), async (req, 
             res.status(500).json({ error: "Failed to parse inference result. Check server logs." });
         }
     });
+});
+
+// --- REPORT SUBMISSION (Post-Detection Form) ---
+app.put('/api/prediction/:id/report', authenticateToken, async (req, res) => {
+    try {
+        const prediction = await Prediction.findOne({
+            where: { id: req.params.id, UserId: req.user.id }
+        });
+
+        if (!prediction) {
+            return res.status(404).json({ error: "Prediction not found" });
+        }
+
+        const { latitude, longitude, landmark, description } = req.body;
+
+        // Update prediction with report details (status stays 'pending' until admin approves)
+        await prediction.update({
+            latitude: latitude ? parseFloat(latitude) : null,
+            longitude: longitude ? parseFloat(longitude) : null,
+            locationSource: latitude ? 'manual' : null,
+            landmark: landmark || null,
+            description: description || null,
+            status: 'pending'
+        });
+
+        // Build Google Maps link
+        const mapsLink = (latitude && longitude)
+            ? `https://www.google.com/maps?q=${latitude},${longitude}`
+            : null;
+
+        res.json({
+            message: "Report submitted! Awaiting admin approval before alert is sent.",
+            mapsLink: mapsLink,
+            prediction: prediction
+        });
+    } catch (err) {
+        console.error("Report Error:", err);
+        res.status(500).json({ error: "Failed to submit report" });
+    }
+});
+
+// --- ADMIN: PENDING REPORTS ---
+app.get('/api/admin/pending', authenticateToken, async (req, res) => {
+    if (!req.user.isAdmin) return res.sendStatus(403);
+
+    try {
+        const pending = await Prediction.findAll({
+            where: { status: 'pending' },
+            include: [{ model: User, attributes: ['username', 'email'] }],
+            order: [['createdAt', 'DESC']]
+        });
+
+        res.json(pending);
+    } catch (err) {
+        console.error("Pending Reports Error:", err);
+        res.status(500).json({ error: "Failed to fetch pending reports" });
+    }
+});
+
+// --- ADMIN: APPROVE REPORT (Triggers Email to Government) ---
+app.put('/api/admin/prediction/:id/approve', authenticateToken, async (req, res) => {
+    if (!req.user.isAdmin) return res.sendStatus(403);
+
+    try {
+        const prediction = await Prediction.findByPk(req.params.id, {
+            include: [{ model: User, attributes: ['username', 'email'] }]
+        });
+
+        if (!prediction) {
+            return res.status(404).json({ error: "Prediction not found" });
+        }
+
+        await prediction.update({ status: 'approved' });
+
+        // Send email alert to government authorities
+        if (prediction.label !== 'No Waste Detected') {
+            const taggedAbsPath = path.resolve('uploads', path.basename(prediction.taggedImagePath));
+
+            sendAlertEmail({
+                label: prediction.label,
+                severity: prediction.severity,
+                totalItems: prediction.totalItems,
+                confidence: prediction.confidence,
+                taggedImagePath: taggedAbsPath,
+                latitude: prediction.latitude,
+                longitude: prediction.longitude,
+                username: prediction.User ? prediction.User.username : 'EcoSight User'
+            }).catch(err => console.error('Email send error:', err));
+        }
+
+        res.json({ message: "Report approved and alert sent to authorities.", prediction });
+    } catch (err) {
+        console.error("Approve Error:", err);
+        res.status(500).json({ error: "Failed to approve report" });
+    }
+});
+
+// --- ADMIN: REJECT REPORT ---
+app.put('/api/admin/prediction/:id/reject', authenticateToken, async (req, res) => {
+    if (!req.user.isAdmin) return res.sendStatus(403);
+
+    try {
+        const prediction = await Prediction.findByPk(req.params.id);
+
+        if (!prediction) {
+            return res.status(404).json({ error: "Prediction not found" });
+        }
+
+        await prediction.update({ status: 'rejected' });
+        res.json({ message: "Report rejected.", prediction });
+    } catch (err) {
+        console.error("Reject Error:", err);
+        res.status(500).json({ error: "Failed to reject report" });
+    }
 });
 
 // --- DASHBOARD ROUTES ---
